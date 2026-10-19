@@ -1,0 +1,40 @@
+name: LBR - surveillance exterieure
+run-name: ${{ inputs.exercise && '[TEST LBR] Verification des alertes' || 'LBR - controle HTTPS et traitements' }}
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      exercise:
+        description: 'Echec volontaire de recette des alertes (site inchange)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lbr-external-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verifier les gardes du moniteur
+        run: python3 -m unittest -v
+      - name: Sonder les URL publiques
+        env:
+          EXERCISE: ${{ inputs.exercise || 'false' }}
+        run: |
+          if [ "$EXERCISE" = true ]; then
+            python3 monitor.py --exercise
+          else
+            python3 monitor.py
+          fi
