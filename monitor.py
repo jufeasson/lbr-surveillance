@@ -20,26 +20,43 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def checks_at(now):
     checks = [("Accueil HTTPS", BASE + "/", "home"),
-              ("Traitements serveur", BASE + "/api/health-v2.php", "health")]
+              ("Traitements serveur", BASE + "/api/health-v2.php", "health"),
+              # Incident 149: the health check never reads Microsoft Bookings.
+              ("Creneaux de reservation", BASE + "/api/reservation-v2.php", "slots")]
     paris = now.astimezone(ZoneInfo("Europe/Paris"))
     if paris.date() >= FIRST_NIGHT and paris.hour >= 6:
         checks.append(("Sauvegarde nocturne", BASE + "/api/health-v2.php?check=nightly-backup", "health"))
     return checks
 
 
+# The public slots read can legitimately take up to its 10 s server budget.
+TIMEOUTS = {"home": 10, "health": 10, "slots": 15}
+CAPS = {"home": 262144, "health": 256, "slots": 65536}
+
+
 def probe(url, kind, opener):
-    request = urllib.request.Request(url, headers={"User-Agent": "LBR-public-monitor/1.0"})
-    with opener.open(request, timeout=10) as response:
+    headers = {"User-Agent": "LBR-public-monitor/1.0"}
+    if kind == "slots":
+        # Same read-only GET as the booking page; no JavaScript, so no Analytics.
+        headers.update({"X-LBR-Request": "reservation-v2", "Cache-Control": "no-cache"})
+    request = urllib.request.Request(url, headers=headers)
+    with opener.open(request, timeout=TIMEOUTS[kind]) as response:
         if response.status != 200 or response.geturl() != url:
             return False
-        cap = 262144 if kind == "home" else 256
+        cap = CAPS[kind]
         data = response.read(cap + 1)
         if len(data) > cap:
             return False
         if kind == "home":
             return "text/html" in response.headers.get("Content-Type", "") and b"Le Bouton Rouge" in data and b"CEE" in data
-        return ("application/json" in response.headers.get("Content-Type", "")
-                and json.loads(data) == {"status": "ok"})
+        if "application/json" not in response.headers.get("Content-Type", ""):
+            return False
+        value = json.loads(data)
+        if kind == "slots":
+            # An empty week is a business state, not an outage: only the shape is required.
+            return (isinstance(value, dict) and set(value) == {"ok", "slots"}
+                    and value["ok"] is True and isinstance(value["slots"], list))
+        return value == {"status": "ok"}
 
 
 def main():
